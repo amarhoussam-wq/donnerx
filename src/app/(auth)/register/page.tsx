@@ -1,14 +1,16 @@
 "use client";
 
-import { useState, Suspense } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { registerSchema, type RegisterFormData } from "@/lib/validations/auth";
 import {
-  Eye, EyeOff, Mail, Lock, User, ArrowRight, AlertCircle, CheckCircle, Heart, Activity,
+  Eye, EyeOff, Mail, Lock, User, ArrowRight, AlertCircle, CheckCircle, Heart, Activity, Sparkles,
 } from "lucide-react";
+import { PasswordStrengthIndicator } from "@/components/auth/PasswordStrengthIndicator";
+import { calculateLocalFallback, type PasswordAnalysis } from "@/lib/security-api";
 
 function RegisterForm() {
   const router = useRouter();
@@ -32,10 +34,15 @@ function RegisterForm() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
 
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysis, setAnalysis] = useState<PasswordAnalysis | null>(null);
+
   const {
     register,
     handleSubmit,
     watch,
+    setValue,
     formState: { errors },
   } = useForm<RegisterFormData>({
     resolver: zodResolver(registerSchema),
@@ -44,17 +51,69 @@ function RegisterForm() {
 
   const password = watch("password", "");
 
-  const passwordStrength = (pwd: string) => {
-    let score = 0;
-    if (pwd.length >= 8) score++;
-    if (/[A-Z]/.test(pwd)) score++;
-    if (/[0-9]/.test(pwd)) score++;
-    if (/[^A-Za-z0-9]/.test(pwd)) score++;
-    return score;
+  // Generate strong password using Security Microservice (Coolify)
+  const handleGeneratePassword = async () => {
+    setIsGenerating(true);
+    try {
+      const res = await fetch("/api/security/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ length: 14 }),
+      });
+      const data = await res.json();
+      if (data?.password) {
+        setValue("password", data.password, { shouldValidate: true });
+        setValue("confirmPassword", data.password, { shouldValidate: true });
+        setShowPassword(true);
+        setShowConfirm(true);
+        setAnalysis({
+          score: data.score ?? 85,
+          label: "strong",
+          entropy_bits: data.entropy_bits ?? 90,
+          crack_time_display: data.crack_time_display || "قرون طويلة",
+          suggestions: [],
+          fallback: data.fallback ?? false,
+        });
+      }
+    } catch (err) {
+      console.error("Failed to generate password", err);
+    } finally {
+      setIsGenerating(false);
+    }
   };
-  const strength = passwordStrength(password);
-  const strengthLabels = ["", "ضعيفة", "مقبولة", "جيدة", "قوية جداً"];
-  const strengthColors = ["", "#ef4444", "#f59e0b", "#3b82f6", "#10b981"];
+
+  // Debounced real-time analysis
+  useEffect(() => {
+    if (!password) {
+      setAnalysis(null);
+      return;
+    }
+
+    // Immediate local calculation for zero latency
+    setAnalysis(calculateLocalFallback(password));
+
+    // Call microservice for deep Shannon entropy, patterns and crack time
+    const timer = setTimeout(async () => {
+      setIsAnalyzing(true);
+      try {
+        const res = await fetch("/api/security/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password, check_breach: false }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setAnalysis(data);
+        }
+      } catch (err) {
+        console.warn("Security analysis remote call failed:", err);
+      } finally {
+        setIsAnalyzing(false);
+      }
+    }, 350);
+
+    return () => clearTimeout(timer);
+  }, [password]);
 
   const onSubmit = async (data: RegisterFormData) => {
     setIsLoading(true);
@@ -216,7 +275,18 @@ function RegisterForm() {
 
             {/* Password */}
             <div>
-              <label className="block text-slate-300 text-[11px] font-bold mb-1.5 tracking-wide">كلمة المرور</label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-slate-300 text-[11px] font-bold tracking-wide">كلمة المرور</label>
+                <button
+                  type="button"
+                  onClick={handleGeneratePassword}
+                  disabled={isGenerating}
+                  className="text-[11px] font-semibold text-emerald-400 hover:text-emerald-300 flex items-center gap-1 transition-colors"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  {isGenerating ? "جاري التوليد..." : "توليد كلمة مرور آمنة"}
+                </button>
+              </div>
               <div className="relative">
                 <Lock className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
                 <input type={showPassword ? "text" : "password"} placeholder="••••••••"
@@ -228,19 +298,18 @@ function RegisterForm() {
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
+
+              {/* Security Microservice Analyzer */}
               {password && (
-                <div className="mt-2">
-                  <div className="flex gap-1 mb-1">
-                    {[1,2,3,4].map(level => (
-                      <div key={level} className="h-1 flex-1 rounded-full transition-all duration-300"
-                        style={{ background: level <= strength ? strengthColors[strength] : "rgba(255,255,255,0.1)" }} />
-                    ))}
-                  </div>
-                  <span className="text-[10px] font-bold" style={{ color: strengthColors[strength] }}>
-                    قوة كلمة المرور: {strengthLabels[strength]}
-                  </span>
-                </div>
+                <PasswordStrengthIndicator
+                  analysis={analysis}
+                  isLoading={isAnalyzing}
+                  onGeneratePassword={handleGeneratePassword}
+                  isGenerating={isGenerating}
+                  accentColor={isDonor ? "#ef4444" : "#3b82f6"}
+                />
               )}
+
               {errors.password && <p className="text-red-400 text-[11px] mt-1 flex items-center gap-1"><AlertCircle className="w-3 h-3" /> {errors.password.message}</p>}
             </div>
 

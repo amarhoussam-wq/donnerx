@@ -99,7 +99,7 @@ function RegisterForm() {
         const res = await fetch("/api/security/analyze", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ password, check_breach: false }),
+          body: JSON.stringify({ password, check_breach: true }),
         });
         if (res.ok) {
           const data = await res.json();
